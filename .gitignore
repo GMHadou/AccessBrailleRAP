@@ -1,4 +1,35 @@
 # See https://help.github.com/ignore-files/ for more about ignoring files.
+# --- Build artifacts ---
+*.bin
+*.exe
+*.out
+*.AppImage
+
+# --- RPM / DEB packaging outputs ---
+package/**/usr/bin/*
+package/**/build/*
+package/**/dist/*
+package/**/target/*
+
+# --- Node / frontend ---
+node_modules/
+dist/
+build/
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.venv
+
+# --- Docs build ---
+docs/_build/
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
 
 # dependencies
 /node_modules
