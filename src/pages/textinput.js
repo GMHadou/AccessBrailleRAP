@@ -97,7 +97,9 @@ class TextInput extends React.Component {
   }
   componentDidMount() {
     if (this.props.focusref)
-      this.props.focusref.current.focus();
+      if (this.props.focusref && this.props.focusref.current) {
+        this.props.focusref.current.focus();
+      }
   }
   render() {
     //console.log (this.props.options);

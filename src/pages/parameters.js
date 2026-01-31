@@ -43,45 +43,56 @@ class Parameters extends React.Component {
         this.handleChangeTheme = this.handleChangeTheme.bind(this);
         this.handleChangeOffsetx = this.handleChangeOffsetx.bind(this);
         this.handleChangeOffsety = this.handleChangeOffsety.bind(this);
+    this.handleChangePageWidthX = this.handleChangePageWidthX.bind(this);
+    this.handleChangeInvertY = this.handleChangeInvertY.bind(this);
         //console.log ("constructor");
     }
 
     async componentDidMount()
     {
-      let list = await window.pywebview.api.gcode_get_serial();
-      console.log (list)
-      let portinfo = JSON.parse(list);
-      this.setState ({data:portinfo})
-
-      if (this.props.glouis())
-      {
-        let brtable = [];
-        let louis = this.props.glouis();
-        let nbr = this.props.glouis().get_table_nbr();
-        for (let i = 0; i < nbr; i++)
-        {
-          let description = louis.get_table_description(i);
-          let flags = louis.get_table_flags(i);
-          //console.log (description + " " + typeof(flags) + " " + flags.toString(16));
-          let br = new braille_info(
-            louis.get_table_fname(i), 
-            description,
-            louis.get_table_lang(i), 
-            louis.get_table_region(i),
-            louis.get_table_flags (i)
-          );
-          brtable.push (
-            br
-          );
-          //console.log (this.props.glouis().get_table_fname(i));
-        }
-        this.setState({brailleinfo:brtable})
+      try {
+        let list = await window.pywebview.api.gcode_get_serial();
+        console.log("Serial ports list:", list);
+        let portinfo = JSON.parse(list);
+        this.setState({data:portinfo});
+      } catch (error) {
+        console.error("Error getting serial ports:", error);
+        this.setState({data:[]});
       }
-      //else
-      //  console.log ("louis dead");
 
-        if (this.props.focusref)
-          this.props.focusref.current.focus ();
+      try {
+        if (this.props.glouis && this.props.glouis())
+        {
+          let brtable = [];
+          let louis = this.props.glouis();
+          let nbr = louis.get_table_nbr();
+          for (let i = 0; i < nbr; i++)
+          {
+            let description = louis.get_table_description(i);
+            let flags = louis.get_table_flags(i);
+            //console.log (description + " " + typeof(flags) + " " + flags.toString(16));
+            let br = new braille_info(
+              louis.get_table_fname(i), 
+              description,
+              louis.get_table_lang(i), 
+              louis.get_table_region(i),
+              louis.get_table_flags (i)
+            );
+            brtable.push(br);
+            //console.log (this.props.glouis().get_table_fname(i));
+          }
+          this.setState({brailleinfo:brtable});
+        } else {
+          console.log("Louis not available");
+        }
+      } catch (error) {
+        console.error("Error loading braille tables:", error);
+        this.setState({brailleinfo:[]});
+      }
+
+      if (this.props.focusref && this.props.focusref.current) {
+        this.props.focusref.current.focus();
+      }
     }
     
     handleSubmit (event)
@@ -150,6 +161,28 @@ class Parameters extends React.Component {
       else
         this.setState({options:option});  
     }
+    handleChangePageWidthX (event)
+    {
+      let option = this.props.options
+      option.pagewidthx = event.target.value;
+      
+      if (this.props.optioncb)
+        this.props.optioncb(option)
+      else
+        this.setState({options:option});  
+    }
+
+    handleChangeInvertY (event)
+    {
+      let option = this.props.options
+      option.inverty = event.target.checked;
+
+      if (this.props.optioncb)
+        this.props.optioncb(option)
+      else
+        this.setState({options:option});  
+    }
+    
     handleChangeLanguage (event)
     {
       let option = this.props.options
@@ -291,19 +324,37 @@ class Parameters extends React.Component {
     }
     render ()
     {
-      if (! this.state.data || this.state.data.length === 0)
+      // Show loading state if data is not yet loaded
+      if (this.state.data === null)
       {
-        
         return (
           <div aria-hidden='true'>
-            {this.props.intl.formatMessage({id:"param.wait"})}
+            {this.props.intl ? this.props.intl.formatMessage({id:"param.wait"}) : "Loading..."}
           </div>
         );
+      }
+      
+      // Show empty state if data is an empty array
+      if (Array.isArray(this.state.data) && this.state.data.length === 0)
+      {
+        // Continue to render the form even with no serial ports
       }  
         //console.log (this.state.data);
         //console.log ("type :" + typeof(this.state.data).toString());
-        console.log (this.context);
-        console.log (this.props.IntlContext);
+        console.log("Parameters render - context:", this.context);
+        console.log("Parameters render - props:", this.props);
+        
+        // Safety checks
+        if (!this.context) {
+          console.error("IntlContext is missing!");
+          return <div>Error: Context not available</div>;
+        }
+        
+        if (!this.props.intl) {
+          console.error("intl prop is missing!");
+          return <div>Error: Intl not available</div>;
+        }
+        
         //const intl = this.props;
         let tat = this.props.intl.formatMessage({id:"param.langtitle"});
         //const tat ="toto";
@@ -314,7 +365,7 @@ class Parameters extends React.Component {
                 role="log" 
                 aria-relevant="all" 
                 aria-atomic={true}
-                className={this.context.getStyleClass('general')}>
+                className={this.context ? this.context.getStyleClass('general') : 'general'}>
                
               <form 
                 aria-label={this.props.intl.formatMessage({id:"param.form_aria"})}  
@@ -409,6 +460,27 @@ class Parameters extends React.Component {
                       value={this.props.options.offsety} 
                       onChange={this.handleChangeOffsety} 
                     />
+                  <label  htmlFor='pagewidthx' aria-label={this.props.intl.formatMessage({id:"param.pagewidthx_aria", defaultMessage:"Page width in millimeters"})}>
+                  <FormattedMessage id="param.pagewidthx" defaultMessage="Page width (mm)"/>
+                  </label>
+                    <input type="number" 
+                      aria-label={this.props.intl.formatMessage({id:"param.pagewidthx_aria", defaultMessage:"Page width in millimeters"})} 
+                      className={this.context.getStyleClass('input')}
+                      step="0.1" min="10" max="500" name="pagewidthx" id="pagewidthx"
+                      value={this.props.options.pagewidthx} 
+                      onChange={this.handleChangePageWidthX} 
+                    />
+                    <label  htmlFor='inverty' style={{marginLeft:'1em'}} aria-label={this.props.intl.formatMessage({id:"param.inverty_aria", defaultMessage:"Invert Y axis"})}>
+                    <FormattedMessage id="param.inverty" defaultMessage="Invert Y direction"/>
+                    </label>
+                      <input type="checkbox"
+                        aria-label={this.props.intl.formatMessage({id:"param.inverty_aria", defaultMessage:"Invert Y axis"})}
+                        className={this.context.getStyleClass('input')}
+                        name="inverty" id="inverty"
+                        checked={this.props.options.inverty}
+                        onChange={this.handleChangeInvertY}
+                      />
+                    
                 </div>
                 <div className='pure-control-group'>
                   

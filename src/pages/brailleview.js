@@ -48,7 +48,9 @@ class BrailleView extends React.Component {
   componentDidMount() {
     // set focus on screen creation
     if (this.props.focusref)
-      this.props.focusref.current.focus();
+      if (this.props.focusref && this.props.focusref.current) {
+        this.props.focusref.current.focus();
+      }
 
   }
   componentWillUnmount() {
@@ -78,6 +80,12 @@ class BrailleView extends React.Component {
                     Number(this.props.options.offsety));
     //console.log (typeof(ptcloud));
     let gcoder = new GeomToGCode();
+    gcoder.setLeftMargin(Number(this.props.options.offsetx));
+    if (this.props.options.pagewidthx != null)
+      gcoder.setPageWidth(Number(this.props.options.pagewidthx));
+    // invert Y axis if requested by user
+    if (this.props.options.inverty != null)
+      gcoder.setInvertY(Boolean(this.props.options.inverty));
     gcoder.GeomToGCode(ptcloud);
     let gcode = gcoder.GetGcode();
     //console.log (gcode);
@@ -125,6 +133,11 @@ class BrailleView extends React.Component {
                     Number(this.props.options.offsetx), 
                     Number(this.props.options.offsety));
     let gcoder = new GeomToGCode();
+    gcoder.setLeftMargin(Number(this.props.options.offsetx));
+    if (this.props.options.pagewidthx != null)
+      gcoder.setPageWidth(Number(this.props.options.pagewidthx));
+    if (this.props.options.inverty != null)
+      gcoder.setInvertY(Boolean(this.props.options.inverty));
     gcoder.GeomToGCode(ptcloud);
     let gcode = gcoder.GetGcode();
 

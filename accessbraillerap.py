@@ -1,212 +1,353 @@
 import os
-import threading
 import platform
 import webview
 import json
-import json
 import sys
+import serial
 import serial.tools.list_ports
-import pypandoc
+import time
+import threading
 from pathlib import Path
 
-import time
+# Força o WebKit a ignorar erros de driver de vídeo e aceleração
+os.environ['WEBKIT_DISABLE_COMPOSITING_MODE'] = '1'
+os.environ['WEBKIT_FORCE_SANDBOX'] = '0'
 
-if getattr(sys, "frozen", False):
-    try:  # pyi_splash only available while running in pyinstaller
-        import pyi_splash
-    except ImportError:
-        pass
-
-# app options dictionnary with default options
 app_options = {
-    "comport": "COM1",
-    "nbcol": "31",
-    "nbline": "24",
-    "linespacing": "0",
-    "brailletbl": "70",
-    "lang": "",
-    "theme": "light",
-    "offsetx":"1",
-    "offsety":"2.5"
+    "comport": "COM1", "nbcol": "31", "nbline": "24", "brailletbl": "70",
+    "lang": "", "theme": "light", "offsetx":"1", "offsety":"2.5", "pagewidthx":"75"
 }
 
+# Variável global para armazenar o último arquivo salvo
+filename = ""
 
+# Status da impressão
 class SerialStatus:
     Ready = 0
-    Busy = 2
+    Busy = 1
 
-rpi = False
-COM_TIMEOUT = 5
-serial_port = None
 serial_status = SerialStatus.Ready
-filename = ""
-root = None
-cancel_print = False
-
-def get_parameter_fname ():
-    paramfname = "acces_brap_parameters.json"
-    if platform.system() == 'Linux':
-        home = Path.home ()
-        dir = Path.joinpath(home, ".accessbraillerap/")
-        print (home, dir)
-        if not os.path.exists(dir):
-            os.makedirs(dir)
-        fpath = Path.joinpath(dir, paramfname)
-        print (fpath)
-        return fpath
-
-    else:
-        return paramfname
-        
-    
-def load_parameters():
-    try:
-
-        fpath = get_parameter_fname()
-
-        with open(fpath, "r", encoding="utf-8") as inf:
-            data = json.load(inf)
-            for k, v in data.items():
-                if k in app_options:
-                    app_options[k] = v
-
-    except Exception as e:
-        print(e)
-
+print_cancel_flag = threading.Event()
 
 class Api:
-    def fullscreen(self):
-        webview.windows[0].toggle_fullscreen()
-
-    def save_content(self, content):
-        filename = webview.windows[0].create_file_dialog(webview.SAVE_DIALOG)
-        if not filename:
-            return
-
-        with open(filename, "w") as f:
-            f.write(content)
-
-    def ls(self):
-        return os.listdir(".")
-
-    def remove_comment(self, string):
-        """Remove comments from GCode if any"""
-        if string.find(";") == -1:
-            return string
-        return string[: string.index(";")]
-
+    def __init__(self, window=None):
+        self.window = window
+    
+    def set_window(self, window):
+        """Define a janela do webview para usar nos diálogos de arquivo"""
+        self.window = window
     def gcode_get_parameters(self):
-        js = json.dumps(app_options)
-        return js
+        print("React solicitou parâmetros")
+        return json.dumps(app_options)
 
     def gcode_set_parameters(self, opt):
-        # print ("parameters", opt, type(opt))
+        """Atualiza os parâmetros da aplicação"""
+        print(f"React está atualizando parâmetros: {opt}")
         try:
-            for k, v in opt.items():
-                if k in app_options:
-                    app_options[k] = v
-
+            # opt é um dicionário Python passado pelo pywebview
+            if isinstance(opt, dict):
+                for k, v in opt.items():
+                    if k in app_options:
+                        app_options[k] = v
+                        print(f"  {k} = {v}")
+            return True
         except Exception as e:
-            print(e)
-        self.save_parameters()
+            print(f"Erro ao atualizar parâmetros: {e}")
+            return False
 
-    def save_parameters(self):
-        """Save parameters in local json file"""
+    def gcode_get_serial(self):
+        """Lista as portas seriais disponíveis no sistema"""
+        print("React solicitou lista de portas")
+        data = []
         try:
-            #print ("data", app_options)
-            #print ("json", json.dumps(app_options))
-            fpath = get_parameter_fname()
-            with open(fpath, "w", encoding="utf-8") as of:
-                json.dump(app_options, of)
-
+            ports = serial.tools.list_ports.comports()
+            for port in ports:
+                data.append({
+                    "device": port.device,
+                    "description": port.description or "",
+                    "name": port.name or "",
+                    "product": port.product or "",
+                    "manufacturer": port.manufacturer or "",
+                })
+            print(f"Encontradas {len(data)} portas seriais")
         except Exception as e:
-            print(e)
+            print(f"Erro ao listar portas seriais: {e}")
+            # Em caso de erro, ainda retorna lista vazia mas loga o erro
+        
+        # Se a porta configurada não estiver na lista, adiciona ela mesmo assim
+        # Isso permite usar portas que não foram detectadas automaticamente
+        if not any(d.get("device", "???") == app_options.get("comport", "") for d in data):
+            configured_port = app_options.get("comport", "")
+            if configured_port:
+                print(f"Adicionando porta configurada que não foi detectada: {configured_port}")
+                data.append({
+                    "device": configured_port,
+                    "description": "Configurada manualmente",
+                    "name": configured_port,
+                    "product": "",
+                    "manufacturer": "",
+                })
+        
+        return json.dumps(data)
 
-    def saveas_file(self, data, dialogtitle, filterstring):
-        global filename
+    def printer_get_status(self):
+        """Retorna o status da impressora"""
+        global serial_status
+        return serial_status
 
-        fname = window.create_file_dialog(
-            webview.SAVE_DIALOG,
-            allow_multiple=False,
-            file_types=(filterstring[0] + " (*.txt)", filterstring[1] + " (*.*)"),
-        )
+    def init_app(self):
+        print(">>> JS chamou: init_app (Sinal de vida do React!)")
+        return True
 
-        if fname == "" or fname == None:
-            return
-        filename = fname
+    def CancelPrint(self):
+        """Cancela a impressão em andamento"""
+        global print_cancel_flag, serial_status
+        print("Cancelando impressão...")
+        print_cancel_flag.set()
+        serial_status = SerialStatus.Ready
+        return True
 
-        with open(filename, "w", encoding="utf8") as inf:
-            inf.writelines(data)
+    def PrintGcode(self, gcode, comport):
+        """Envia G-code para a impressora via porta serial"""
+        global serial_status, print_cancel_flag
+        
+        if serial_status == SerialStatus.Busy:
+            print("Impressora ocupada")
+            return "Impressão em andamento"
+        
+        # Reset cancel flag
+        print_cancel_flag.clear()
+        serial_status = SerialStatus.Busy
+        
+        try:
+            print(f"Abrindo porta serial: {comport}")
+            with serial.Serial(comport, 250000, timeout=2, write_timeout=2) as Printer:
+                print(f"{comport} aberta")
+                
+                # Wake up printer
+                Printer.write(b"\r\n\r\n")
+                time.sleep(1)
+                Printer.flushInput()
+                
+                print("Enviando G-code")
+                gcodelines = gcode.split("\r\n")
+                
+                for line in gcodelines:
+                    # Check if cancelled
+                    if print_cancel_flag.is_set():
+                        print("Impressão cancelada pelo usuário")
+                        serial_status = SerialStatus.Ready
+                        return "Impressão cancelada"
+                    
+                    cmd_gcode = self._remove_comment(line).strip()
+                    
+                    if cmd_gcode and not cmd_gcode.isspace():
+                        print(f"Enviando: {cmd_gcode}")
+                        Printer.write(cmd_gcode.encode() + b"\n")
+                        
+                        # Wait for "ok" response
+                        tbegin = time.time()
+                        while True:
+                            if print_cancel_flag.is_set():
+                                print("Impressão cancelada durante envio")
+                                serial_status = SerialStatus.Ready
+                                return "Impressão cancelada"
+                            
+                            grbl_out = Printer.readline()
+                            if grbl_out:
+                                print(grbl_out.strip().decode("utf-8", errors="ignore"))
+                                if b"ok" in grbl_out:
+                                    break
+                                tbegin = time.time()
+                            
+                            if time.time() - tbegin > 5:
+                                raise Exception("Timeout na comunicação com a impressora")
+                
+                print("Fim da impressão")
+                serial_status = SerialStatus.Ready
+                return " "
+                
+        except serial.SerialException as e:
+            print(f"Erro de porta serial: {e}")
+            serial_status = SerialStatus.Ready
+            return f"Erro de porta serial: {str(e)}"
+        except Exception as e:
+            print(f"Erro na impressão: {e}")
+            serial_status = SerialStatus.Ready
+            return f"Erro de impressão: {str(e)}"
+    
+    def _remove_comment(self, line):
+        """Remove comentários de uma linha G-code"""
+        if ';' in line:
+            return line.split(';')[0]
+        return line
 
     def save_file(self, data, dialogtitle, filterstring):
+        """Salva o arquivo. Se filename já existe, salva diretamente. Caso contrário, abre diálogo."""
         global filename
-        if filename == "":
-            fname = window.create_file_dialog(
+        
+        if not self.window:
+            self.window = webview.windows[0] if webview.windows else None
+        
+        if not self.window:
+            print("Erro: Janela do webview não disponível")
+            return False
+        
+        # Se não há filename salvo, abre diálogo
+        if filename == "" or filename is None:
+            try:
+                # filterstring é uma lista: [filter_text, filter_generic]
+                # pywebview espera uma tupla de strings no formato "Description (*.ext)"
+                file_types = (
+                    filterstring[0] + " (*.txt)",
+                    filterstring[1] + " (*.*)"
+                ) if len(filterstring) >= 2 else ("Text files (*.txt)", "All files (*.*)")
+                
+                fname = self.window.create_file_dialog(
+                    webview.SAVE_DIALOG,
+                    allow_multiple=False,
+                    file_types=file_types
+                )
+                
+                if not fname or fname == "":
+                    return False
+                filename = fname
+            except Exception as e:
+                print(f"Erro ao abrir diálogo de salvar: {e}")
+                return False
+        
+        # Salva o arquivo
+        try:
+            with open(filename, "w", encoding="utf8") as f:
+                f.write(data)
+            print(f"Arquivo salvo: {filename}")
+            return True
+        except Exception as e:
+            print(f"Erro ao salvar arquivo: {e}")
+            return False
+
+    def saveas_file(self, data, dialogtitle, filterstring):
+        """Sempre abre diálogo para salvar como"""
+        global filename
+        
+        if not self.window:
+            self.window = webview.windows[0] if webview.windows else None
+        
+        if not self.window:
+            print("Erro: Janela do webview não disponível")
+            return False
+        
+        try:
+            # filterstring é uma lista: [filter_text, filter_generic]
+            # pywebview espera uma tupla de strings no formato "Description (*.ext)"
+            file_types = (
+                filterstring[0] + " (*.txt)",
+                filterstring[1] + " (*.*)"
+            ) if len(filterstring) >= 2 else ("Text files (*.txt)", "All files (*.*)")
+            
+            fname = self.window.create_file_dialog(
                 webview.SAVE_DIALOG,
                 allow_multiple=False,
-                file_types=(filterstring[0] + " (*.txt)", filterstring[1] + " (*.*)"),
+                file_types=file_types
             )
-            if fname == "" or fname == None:
-                return
+            
+            if not fname or fname == "":
+                return False
+            
             filename = fname
-
-        with open(filename, "w", encoding="utf8") as inf:
-            # print (data)
-            inf.writelines(data)
+            
+            with open(filename, "w", encoding="utf8") as f:
+                f.write(data)
+            print(f"Arquivo salvo como: {filename}")
+            return True
+        except Exception as e:
+            print(f"Erro ao salvar arquivo: {e}")
+            return False
 
     def load_file(self, dialogtitle, filterstring):
+        """Abre diálogo para carregar arquivo e retorna JSON com dados"""
         global filename
+        
+        if not self.window:
+            self.window = webview.windows[0] if webview.windows else None
+        
+        if not self.window:
+            print("Erro: Janela do webview não disponível")
+            return json.dumps({"data": "", "error": "Window not available"})
+        
         js = {"data": "", "error": ""}
-
-        # check file filter
+        
+        # Verifica filtro
         if len(filterstring) < 2:
             js["error"] = "incorrect file filter"
             return json.dumps(js)
-
-        # open common dialog
-        oldfilter = (("Text files", "*.txt"), ("All files", "*.*"))
-        filter = ((filterstring[0], "*.txt"), (filterstring[1], "*.*"))
-
-        listfiles = window.create_file_dialog(
-            webview.OPEN_DIALOG,
-            allow_multiple=False,
-            file_types=(filterstring[0] + " (*.txt)", filterstring[1] + " (*.*)"),
-        )
-
-        if listfiles is None:
-            return json.dumps(js)
-        if len(listfiles) != 1:
-            return json.dumps(js)
-
-        fname = listfiles[0]
-        if fname == "" or fname == None:
-            return json.dumps(js)
-
-        with open(fname, "rt", encoding="utf8") as inf:
-            js["data"] = inf.read()
+        
+        try:
+            # pywebview espera uma tupla de strings no formato "Description (*.ext)"
+            file_types = (
+                filterstring[0] + " (*.txt)",
+                filterstring[1] + " (*.*)"
+            )
             
-            filename = fname
-
-        return json.dumps(js)
+            listfiles = self.window.create_file_dialog(
+                webview.OPEN_DIALOG,
+                allow_multiple=False,
+                file_types=file_types
+            )
+            
+            if not listfiles or len(listfiles) != 1:
+                return json.dumps(js)
+            
+            fname = listfiles[0]
+            if not fname or fname == "":
+                return json.dumps(js)
+            
+            with open(fname, "rt", encoding="utf8") as f:
+                js["data"] = f.read()
+                filename = fname
+            
+            print(f"Arquivo carregado: {filename}")
+            return json.dumps(js)
+        except Exception as e:
+            js["error"] = str(e)
+            print(f"Erro ao carregar arquivo: {e}")
+            return json.dumps(js)
 
     def import_pandoc(self, dialogtitle, filterstring):
+        """Importa arquivo usando pandoc (se disponível)"""
         global filename
+        
+        if not self.window:
+            self.window = webview.windows[0] if webview.windows else None
+        
+        if not self.window:
+            print("Erro: Janela do webview não disponível")
+            return json.dumps({"data": "", "error": "Window not available"})
+        
         js = {"data": "", "error": ""}
-
-        listfiles = window.create_file_dialog(
-            webview.OPEN_DIALOG,
-            allow_multiple=False,
-            file_types=(filterstring[0] + " (*.*)",),
-        )
-        if listfiles is None:
-            return json.dumps(js)
-        if len(listfiles) != 1:
-            return json.dumps(js)
-        fname = listfiles[0]
-
-        if fname != "":
+        
+        try:
+            # pywebview espera uma tupla de strings
+            file_types = (filterstring[0] + " (*.*)",) if len(filterstring) >= 1 else ("All files (*.*)",)
+            
+            listfiles = self.window.create_file_dialog(
+                webview.OPEN_DIALOG,
+                allow_multiple=False,
+                file_types=file_types
+            )
+            
+            if not listfiles or len(listfiles) != 1:
+                return json.dumps(js)
+            
+            fname = listfiles[0]
+            if not fname or fname == "":
+                return json.dumps(js)
+            
             filename = ""
+            
+            # Tenta usar pypandoc se disponível, senão apenas lê o arquivo como texto
             try:
+                import pypandoc
                 js["data"] = pypandoc.convert_file(
                     fname,
                     "plain+simple_tables",
@@ -214,253 +355,76 @@ class Api:
                     encoding="utf-8",
                     outputfile=None,
                 )
-                # print (data)
+            except ImportError:
+                # Se pypandoc não estiver disponível, apenas lê o arquivo como texto
+                print("pypandoc não disponível, lendo arquivo como texto simples")
+                with open(fname, "rt", encoding="utf8") as f:
+                    js["data"] = f.read()
             except Exception as e:
                 js["error"] = str(e)
-
-        return json.dumps(js)
-
-    def CancelPrint(self):
-        global cancel_print
-        cancel_print = True
-        print ("Printing cenceled")
-        return
-
-    def PrintGcode(self, gcode, comport):
-        global serial_status, cancel_print
-        #print("Opening Serial Port", comport)
-
-        try:
-            cancel_print = False
-            if serial_status == SerialStatus.Busy:
-                print("Printer busy")
-                return "Print in progress :"
-
-            serial_status = SerialStatus.Busy
-            with serial.Serial(comport, 250000, timeout=2, write_timeout=2) as Printer:
-                #print(comport, "is open")
-
-                # Hit enter a few times to wake up
-                Printer.write(str.encode("\r\n\r\n"))
-                # print(comport, "cleanup")
-                time.sleep(1)
-                Printer.flushInput()  # Flush startup text in serial input
-                # print("Sending GCode")
-                gcodelines = gcode.split("\r\n")
-                for line in gcodelines:
-                    cmd_gcode = self.remove_comment(line)
-                    cmd_gcode = (
-                        cmd_gcode.strip()
-                    )  # Strip all EOL characters for streaming
-                    if cmd_gcode.isspace() is False and len(cmd_gcode) > 0:
-                        #print("Sending: " + cmd_gcode)
-                        Printer.write(
-                            cmd_gcode.encode() + str.encode("\n")
-                        )  # Send g-code block
-                        # Wait for response with carriage return
-                        tbegin = time.time()
-                        while True:
-                            grbl_out = Printer.readline()
-                            #print(grbl_out.strip().decode("utf-8"))
-                            if str.encode("ok") in grbl_out:
-                                break
-                            if len(grbl_out) > 0:
-                                tbegin = time.time()
-                            if time.time() - tbegin > COM_TIMEOUT:
-                                raise Exception("Timeout in printer communication")
-
-                    if cancel_print:
-                        Printer.write(
-                            str.encode("M84;\n") # disable motor
-                        )  
-                        Printer.readline()
-                        break
-
-                #print("End of printing")
-                Printer.close()
+                print(f"Erro ao converter arquivo com pandoc: {e}")
+            
+            filename = fname
+            print(f"Arquivo importado: {filename}")
+            return json.dumps(js)
         except Exception as e:
-            print(e)
-            serial_status = SerialStatus.Ready
-            return "Erreur d'impression :" + str(e)
-
-        serial_status = SerialStatus.Ready
-        return " "
-
-    def gcode_set_serial(serial):
-        serial_port = serial
-
-    def gcode_set_com_port(self, port):
-        app_options["comport"] = str(port)
-        self.save_parameters()
-
-    def gcode_set_nb_line(self, nbline):
-        app_options["nbline"] = int(nbline)
-        self.save_parameters()
-
-    def gcode_set_nb_col(self, nbcol):
-        app_options["nbcol"] = int(nbcol)
-        json.dump()
-
-    def gcode_get_serial(self):
-        data = []
-        try:
-            ports = serial.tools.list_ports.comports()
-            for port in ports:
-                # print (port.device)
-                # print (port.hwid)
-                # print (port.name)
-                # print (port.description)
-                # print (port.product)
-                # print (port.manufacturer)
-                data.append(
-                    {
-                        "device": port.device,
-                        "description": port.description,
-                        "name": port.name,
-                        "product": port.product,
-                        "manufacturer": port.manufacturer,
-                    }
-                )
-            print(data)
-        except Exception as e:
-            print(e)
-
-        # check if com port in parameters is present in port enumeration
-        if not any(d.get("device", "???") == app_options["comport"] for d in data):
-            print("adding com port in parameters")
-            data.append(
-                {
-                    "device": app_options["comport"],
-                    "description": "inconnu",
-                    "name": "inconnu",
-                    "product": "inconnu",
-                    "manufacturer": "inconnu",
-                }
-            )
-
-        # dump data in json format for frontend
-        js = json.dumps(data)
-
-        return js
-
+            js["error"] = str(e)
+            print(f"Erro ao importar arquivo: {e}")
+            return json.dumps(js)
 
 def get_entrypoint():
-    def exists(path):
-        print(os.path.join(os.path.dirname(__file__), path))
-        return os.path.exists(os.path.join(os.path.dirname(__file__), path))
-
-    if exists("./build/index.html"):  # unfrozen development
-        return "./build/index.html"
-
-    # if exists("../Resources/gui/index.html"):  # frozen py2app
-    #     return "../Resources/gui/index.html"
-
-    # if exists("./gui/index.html"):
-    #     return "./gui/index.html"
-
-    raise Exception("No index.html found")
-
-
-# def set_interval(interval):
-#     def decorator(function):
-#         def wrapper(*args, **kwargs):
-#             stopped = threading.Event()
-
-#             def loop():  # executed in another thread
-#                 while not stopped.wait(interval):  # until stopped
-#                     function(*args, **kwargs)
-
-#             t = threading.Thread(target=loop)
-#             t.daemon = True  # stop if the program exits
-#             t.start()
-#             return stopped
-
-#         return wrapper
-
-#     return decorator
-
-
-
-def delete_splash():
-    print ("delete splash **************************************************")
+    # Obtém o diretório do script (não depende do CWD)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    build_dir = os.path.join(base_dir, "build")
+    index_path = os.path.join(build_dir, "index.html")
     
+    # Verifica se o build existe
+    if not os.path.exists(index_path):
+        raise FileNotFoundError(f"Build não encontrado em: {index_path}")
     
-    try:
-        if (rpi):
-            time.sleep(10)
-            print ("#################################  resize the window")
-            window.resize (512,512)
-            window.maximize()
-    except:
-        pass
-        
-    try:
-        if getattr(sys, "frozen", True):
-            pyi_splash.close()
-    except:
-        pass
-    # print ("started", time())
-
-
-entry = get_entrypoint()
+    # Verifica se os arquivos estáticos existem
+    static_dir = os.path.join(build_dir, "static")
+    if not os.path.exists(static_dir):
+        print(f"AVISO: Diretório static não encontrado em: {static_dir}")
+    
+    abs_index_path = os.path.abspath(index_path)
+    abs_build_dir = os.path.abspath(build_dir)
+    
+    print(f"DEBUG: Script em: {base_dir}")
+    print(f"DEBUG: Servindo diretório build de: {abs_build_dir}")
+    print(f"DEBUG: HTML index em: {abs_index_path}")
+    print(f"DEBUG: Static dir existe: {os.path.exists(static_dir)}")
+    
+    # Com http_server=True, passamos o arquivo index.html
+    # O pywebview serve arquivos do diretório que contém o arquivo
+    # Isso permite que os caminhos relativos (./static/js/...) funcionem
+    return abs_index_path
 
 if __name__ == "__main__":
     api = Api()
-
-    debugihm = False
-
-    # print(sys.argv)
-    dir, script = os.path.splitext(sys.argv[0])
-    if len(sys.argv) > 1 and script == ".py":
-        if sys.argv[1] == "--debug":
-            debugihm = True
-
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    build_dir = os.path.join(base_dir, "build")
     
-
-    print("start html=", entry)
-    load_parameters()
-    
-    #start gui
-    if platform.machine() == 'aarch64':
-        rpi = True
-    
-    if rpi:   
+    # Muda para o diretório build para garantir que os caminhos relativos funcionem
+    original_cwd = os.getcwd()
+    try:
+        os.chdir(build_dir)
+        entry = "index.html"  # Caminho relativo do diretório build
+        print(f"DEBUG: Mudando CWD para: {build_dir}")
+        print(f"DEBUG: Usando entry: {entry}")
+        
+        # Com http_server=True, passamos o arquivo index.html
+        # O pywebview serve arquivos do diretório atual (build)
         window = webview.create_window(
-            "AccessBrailleRAP", entry, js_api=api, focus=True
+            "AccessBrailleRAP Debug", entry, js_api=api, width=1000, height=700
         )
-    else:
-        window = webview.create_window(
-            "AccessBrailleRAP", entry, js_api=api, maximized=True, focus=True
-        )
- 
-    # print ("created", time())
-    if platform.system() == "Windows":
-        print ("starting Windows GUI")
-        webview.start(delete_splash, http_server=False, debug=debugihm)
-    elif (platform.system() == "Linux"):
-        #set QT_QPA_PLATFORM on UBUNTU
-        if getattr(sys, 'frozen', False):
-            
-            if ('QT_QPA_PLATFORM' in os.environ):
-                print ("QT_QPA_PLATFORM=", os.environ['QT_QPA_PLATFORM'])
-                print ("starting Linux GUI QT with configured QT_QPA_PLATFORM")
-                webview.start(delete_splash, gui="qt", http_server=False, debug=debugihm)
-            else:
-                print ("QT_QPA_PLATFORM=<empty>")
-                print ("try to resolve with XDG_SESSION_TYPE")
-                plugin = 'xcb'
+        
+        # Define a janela no API para usar nos diálogos de arquivo
+        api.set_window(window)
 
-                if ('XDG_SESSION_TYPE' in os.environ):             
-                    if (os.environ['XDG_SESSION_TYPE'] == 'wayland'):
-                        plugin = 'wayland'
-                    
-                # try wayland and xcb to start QT
-                print ("setting QT_QPA_PLATFORM to :", plugin)
-                os.environ['QT_QPA_PLATFORM'] = plugin
-                webview.start(delete_splash, gui="qt", http_server=False, debug=debugihm)                
-                
-        else :
-            print ("starting  GUI QT dev environment")
-            webview.start(delete_splash, gui="qt", http_server=False, debug=debugihm)
-
-    
+        # http_server=True é OBRIGATÓRIO no Linux para o React carregar os JS
+        # debug=True permite ver erros no console do navegador
+        webview.start(gui="gtk", http_server=True, debug=True)
+    finally:
+        # Restaura o diretório original
+        os.chdir(original_cwd)

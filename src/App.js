@@ -1,5 +1,5 @@
 import React, { Component } from "react";
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { HashRouter, Routes, Route } from 'react-router-dom';
 
 import Layout from './layout'
 import BrailleView from './pages/brailleview';
@@ -46,12 +46,26 @@ class App extends Component {
 
     async webviewloaded ()
     {
+      // Evita múltiplas inicializações
+      if (this.state.webviewready) {
+        console.log("webviewloaded já foi chamado, ignorando");
+        return;
+      }
+      
+      if (!window.pywebview || !window.pywebview.api) {
+        console.log("pywebview.api ainda não está disponível, aguardando...");
+        return;
+      }
+      
       if (!window.pywebview.state) {
-        console.log ("pywebviewready event");
-        
         window.pywebview.state = {};
+      }
+      
+      console.log ("pywebviewready event - inicializando app");
+      
+      try {
         let option = await window.pywebview.api.gcode_get_parameters();
-        console.log (option);
+        console.log ("Parâmetros recebidos:", option);
         let params = JSON.parse(option);
 
         this.setState({webviewready:true});
@@ -67,19 +81,35 @@ class App extends Component {
         this.context.setTheme(params["theme"]);
         this.louis = new libLouis();
         this.louis.load (this.LouisLoaded);
-        
+      } catch (error) {
+        console.error("Erro ao inicializar webview:", error);
       }
-      
     }
     async componentDidMount ()
     {
+      // Verifica se pywebview já está pronto (evento pode ter sido disparado antes do mount)
+      if (window.pywebview && window.pywebview.api) {
+        console.log("pywebview já está disponível, verificando se precisa inicializar");
+        // Pequeno delay para garantir que tudo está pronto
+        setTimeout(() => {
+          if (!this.state.webviewready) {
+            console.log("Chamando webviewloaded diretamente");
+            this.webviewloaded();
+          }
+        }, 100);
+      }
+      
+      // Também aguarda o evento caso ainda não tenha sido disparado
       window.addEventListener('pywebviewready', this.webviewloaded);
+      // Algumas versões do pywebview usam _pywebviewready
+      window.addEventListener('_pywebviewready', this.webviewloaded);
     }
 
     onMenuClick ()
     {
-        if (this.focusReference)
-          this.focusReference.current.focus ();
+        if (this.focusReference && this.focusReference.current) {
+          this.focusReference.current.focus();
+        }
     }
    
     SetText (str)
@@ -138,7 +168,7 @@ class App extends Component {
 
       return (
       
-        <BrowserRouter>
+        <HashRouter>
             <Routes >
               <Route path="/" element={<Layout focuscb={this.onMenuClick} status={this.state.serialstatus}/>}>
                 <Route index element={<TextInput logger={this.LogCallBack} src={this.state.srctxt} textcb={this.SetText} options={this.state.options} focusref={this.focusReference}/> } />
@@ -150,7 +180,7 @@ class App extends Component {
                 <Route path="*" element={<TextInput logger={this.LogCallBack} src={this.state.srctxt} textcb={this.SetText} options={this.state.options} focusref={this.focusReference}/>} />
               </Route>
             </Routes>
-          </BrowserRouter>
+          </HashRouter>
       
       );
     }

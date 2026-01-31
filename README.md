@@ -16,9 +16,29 @@ AccessBrailleRAP depends on glibc version. Unfortunately recent Debian and Ubunt
 If your are using Debian12 or a derivate distribution, use desktopbraillerap-debian. 
 If you are using Ubuntu24.04 or a derivate distribution, use desktopbraillerap-ubuntu
 
+**Arch Linux**: The standalone executable works natively on Arch Linux without any additional dependencies beyond what you'd install during the build process.
+
 [![auto_build_for_debian](https://github.com/braillerap/AccessBrailleRAP/actions/workflows/auto_build_for_debian.yml/badge.svg?event=release)](https://github.com/braillerap/AccessBrailleRAP/actions/workflows/auto_build_for_debian.yml)
 
 [![auto_build_for_ubuntu](https://github.com/braillerap/AccessBrailleRAP/actions/workflows/auto_build_for_ubuntu.yml/badge.svg?event=release)](https://github.com/braillerap/AccessBrailleRAP/actions/workflows/auto_build_for_ubuntu.yml)
+
+### Building on Arch Linux
+
+To build a standalone executable on Arch Linux:
+
+```bash
+# Install dependencies
+sudo pacman -S nodejs npm python python-pip
+pip install -r requirement.txt
+
+# Build the executable
+npm install
+npm run buildlinux
+
+# Output will be in ./dist/accessbraillerap
+```
+
+The resulting executable contains all dependencies and can be distributed and run on any compatible Linux system.
 
 
 To use the BrailleRAP embosser from Linux, the user need permission to use the serial port. This generaly mean that your user need to be in the dialout group.
@@ -287,3 +307,51 @@ Docker configuration to build AccessBrailleRAP for Debian or Ubuntu are availabl
 [Debian](https://github.com/braillerap/BuildAccessBrailleRAPDebian)
 
 [Ubuntu](https://github.com/braillerap/BuildAccessBrailleRAPLinux)
+
+## Docker quickstart (recommended for reproducible builds)
+
+This repository contains Dockerfiles and a `docker-compose.yml` to run AccessBrailleRAP in containers for development or build environments. Use Docker Desktop on Windows/macOS or Docker Engine on Linux.
+
+Quick notes:
+- `access` service: headless / build / dev container (runs the Python backend).
+- `desktop` service: GUI container (Xvfb + x11vnc) — connect with a VNC client at port 5900.
+- The `docker/requirements` directory contains `common.txt` and `linux-extras.txt` for package organization. See `CONTAINER.md` for details.
+
+Examples (PowerShell)
+
+1) Build and run the headless AccessBrailleRAP service:
+
+```powershell
+# From repository root
+docker compose up --build access
+```
+
+This will mount the repository into the container so you can iterate on code from your host.
+
+2) Build and run the Desktop GUI service (VNC):
+
+```powershell
+docker compose up --build desktop
+```
+
+Then open a VNC client and connect to `localhost:5900`. By default the image configures a simple VNC password for development—change it before using publicly.
+
+3) Build images only (optional):
+
+```powershell
+docker build -f Dockerfile.access -t accessbraillerap:local .
+docker build -f Dockerfile.desktop -t desktopbraillerap:local .
+```
+
+4) Run an image manually with a mounted repository and exposed port (PowerShell example):
+
+```powershell
+docker run --rm -it -v ${PWD}:/app -p 8000:8000 accessbraillerap:local
+```
+
+Troubleshooting & notes
+- Some packages (PyGObject, PyQt, pythonnet, pywin32-ctypes) require system libraries or are Windows-specific. If pip install fails inside the container, check `CONTAINER.md` for extra apt packages to add to the Dockerfile or run the build on a matching platform.
+- Building native Windows executables should be performed on a Windows runner (or Windows container) — cross-building from Linux is unreliable for producing Windows installers.
+- If you plan to run the GUI container on a remote host, secure VNC access with a strong password and firewall rules.
+
+For more details, advanced build recipes, and troubleshooting steps see `CONTAINER.md` in the repository root.
